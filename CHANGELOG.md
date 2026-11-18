@@ -1,3 +1,12 @@
+# Changelog
+
+## [0.1.0] - 2026-11-18
+
+- Selection visible and still: rows that tie on the sort key fall back to the PID, so equal-CPU processes no longer reshuffle every refresh and carry the selection off screen; a 250 ms warm-up sample gives the first snapshot real CPU; the selected row carries a `▶` mark.
+- Mouse: the wheel moves the selection (or scrolls logs), a click selects a row, a second click opens its detail, a click toggles a kind or switches tab; capture is released on exit and on panic.
+- Narrow terminals: under 100 columns the kinds pane folds into the table title; the VRAM column shows only where a process holds GPU memory. Footer and README name the arrow keys.
+- Evidence: `make check` green (27 tests, 7 new); pty drive at 160 and 80 columns: selection stays on row 1 across refreshes, wheel and click move it, second click opens the detail, tab click switches, mouse capture off at exit.
+- TODO_procs closed FINISHED: procs built, sandboxed, installed from main and driven; the mouse and stable-selection fix found by Damien in use; the release moves to TODO_release.
 - `procs` TUI (TODO_procs): every process classified into eight kinds (agent, ide, terminal, service, desktop,
   container, system, kernel) by the nearest marker up its parent chain, kind checkboxes, port / text filter, sort,
   detail pane (cmd, exe, cwd, chain, cgroup, PSS, swap, fds, I/O, CPU history, VRAM), SIGTERM/SIGKILL after `y`;
