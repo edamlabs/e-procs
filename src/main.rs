@@ -5,12 +5,14 @@ mod model;
 mod providers;
 mod tui;
 
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use ratatui::crossterm::execute;
 
 use crate::model::{Container, Detail, Proc};
 use crate::providers::docker::DockerDriver;
@@ -21,6 +23,9 @@ use crate::tui::app::{App, Effect, Logs};
 
 const REFRESH: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(100);
+/// CPU is a delta: a first sample this long before the first snapshot, or it shows every process at 0% and the
+/// order jumps on the second.
+const WARMUP: Duration = Duration::from_millis(250);
 
 // ##### MESSAGES #####
 
@@ -43,6 +48,8 @@ enum Update {
 fn collect(asks: &Receiver<Ask>, updates: &Sender<Update>) {
     let mut system = SystemDriver::new();
     let mut watch = None;
+    system.run(&HashMap::new());
+    thread::sleep(WARMUP);
     loop {
         let procs = system.run(&GpuDriver::run());
         let snapshot = Update::Snapshot(procs, DockerDriver::run(), watch.map(SystemDriver::detail));
@@ -101,13 +108,15 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
             }
         }
         terminal.draw(|frame| tui::view::draw(frame, &mut app))?;
-        let key = event::poll(POLL)?.then(event::read).transpose()?.and_then(|e| match e {
-            Event::Key(k) if k.kind == KeyEventKind::Press => Some(k),
-            _ => None,
-        });
-        let Some(key) = key else { continue };
-        app.status.clear();
-        match app.key(key) {
+        let effect = match event::poll(POLL)?.then(event::read).transpose()? {
+            Some(Event::Key(k)) if k.kind == KeyEventKind::Press => {
+                app.status.clear();
+                app.key(k)
+            }
+            Some(Event::Mouse(m)) => app.mouse(m),
+            _ => continue,
+        };
+        match effect {
             Effect::Quit => return Ok(()),
             Effect::None => {}
             Effect::Watch(pid) => {
@@ -118,6 +127,22 @@ fn run(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
     }
 }
 
+/// Mouse reporting on for the life of the value; dropped on return and on panic, so the shell never inherits it.
+struct Mouse;
+
+impl Mouse {
+    fn on() -> std::io::Result<Self> {
+        execute!(std::io::stdout(), EnableMouseCapture).map(|()| Self)
+    }
+}
+
+impl Drop for Mouse {
+    fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    }
+}
+
 fn main() -> std::io::Result<()> {
+    let _mouse = Mouse::on()?;
     ratatui::run(run)
 }
