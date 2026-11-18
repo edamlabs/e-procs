@@ -1,0 +1,28 @@
+[package]
+name = "e-procs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "procs: see, filter, inspect and kill every process and compose container from one terminal table"
+license = "MIT"
+repository = "https://github.com/edamlabs/e-procs"
+readme = "README.md"
+keywords = ["process", "tui", "ports", "docker", "kill"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "procs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+procfs = { version = "0.18.0", default-features = false }
+ratatui = "0.30.2"
+rustix = { version = "1.1.6", features = ["process"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
