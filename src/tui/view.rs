@@ -8,8 +8,7 @@ use crate::model::{Kind, Port, Proc, Proto};
 use crate::tui::app::{App, Tab};
 
 const SELECTED: Style = Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD);
-const KEYS_PROCS: &str =
-    " 1-8 kind · a all · m mine · p ports · / filter · s sort · ⏎ detail · t term · K kill · ⇥ compose · q quit ";
+const KEYS_PROCS: &str = " 1-8 kind · a all · m mine · p ports · / filter · esc clear · s sort · ⏎ detail · t term · K kill · ⇥ compose · q quit ";
 const KEYS_COMPOSE: &str = " x stop · u start · r restart · l logs · ⇥ procs · q quit ";
 
 // ##### FORMAT #####

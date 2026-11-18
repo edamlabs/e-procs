@@ -32,7 +32,7 @@ full chain with PIDs, cgroup unit, PSS, swap, threads, open fds, disk I/O and a 
 | `p` | only processes listening on a port |
 | `/` | filter: a number is a PID or a port, text matches name and command |
 | `s` | sort by cpu · mem · pid · name |
-| `⏎` / `Esc` | open / close the detail |
+| `⏎` / `Esc` | open / close the detail; `Esc` with the detail closed clears the filter |
 | `t` / `K` | SIGTERM / SIGKILL, after `y` |
 | `⇥` | compose view · `q` quit |
 

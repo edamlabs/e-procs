@@ -135,7 +135,11 @@ impl App {
     }
 
     fn common_reindex(&mut self) {
-        let keep = self.selected().map(|p| p.pid);
+        self.common_place(self.selected().map(|p| p.pid));
+    }
+
+    /// Rows rebuilt over the current `procs`, the selection back on `keep`; `keep` is read before `procs` changes.
+    fn common_place(&mut self, keep: Option<i32>) {
         let mut rows: Vec<usize> = (0..self.procs.len())
             .filter(|&i| self.common_matches(&self.procs[i]))
             .collect();
@@ -307,8 +311,9 @@ impl App {
     }
 
     pub fn update(&mut self, procs: Vec<Proc>, compose: Result<Vec<Container>, String>, detail: Option<Detail>) {
+        let keep = self.selected().map(|p| p.pid);
         self.procs = procs;
-        self.common_reindex();
+        self.common_place(keep);
         let len = compose.as_ref().map_or(0, Vec::len);
         self.compose = compose;
         self.boxes
@@ -346,6 +351,11 @@ impl App {
             (KeyCode::Esc, _) if self.open => {
                 self.open = false;
                 Effect::Watch(None)
+            }
+            (KeyCode::Esc, _) => {
+                self.filter.clear();
+                self.common_reindex();
+                Effect::None
             }
             (KeyCode::Tab, _) => {
                 self.tab = match self.tab {
@@ -453,6 +463,36 @@ mod tests {
             press(&mut app, KeyCode::Char(c));
         });
         assert_eq!(pids(&app), [10]);
+    }
+
+    #[test]
+    fn test_update_with_fewer_processes_never_reads_stale_rows() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected().map(|p| p.pid), Some(13));
+        app.update(vec![proc(11, Kind::Agent, 5.0, None)], Ok(Vec::new()), None);
+        assert_eq!(pids(&app), [11]);
+        assert_eq!(app.selected().map(|p| p.pid), Some(11));
+    }
+
+    #[test]
+    fn test_esc_clears_applied_filter_and_new_filter_starts_fresh() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('/'));
+        "8000".chars().for_each(|c| {
+            press(&mut app, KeyCode::Char(c));
+        });
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(pids(&app), [10]);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.filter.is_empty());
+        assert_eq!(pids(&app), [11, 10]);
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('1'));
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.filter, "11");
+        assert_eq!(pids(&app), [11]);
     }
 
     #[test]
