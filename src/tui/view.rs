@@ -8,8 +8,11 @@ use crate::model::{Kind, Port, Proc, Proto};
 use crate::tui::app::{App, Tab};
 
 const SELECTED: Style = Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD);
-const KEYS_PROCS: &str = " 1-8 kind · a all · m mine · p ports · / filter · esc clear · s sort · ⏎ detail · t term · K kill · ⇥ compose · q quit ";
-const KEYS_COMPOSE: &str = " x stop · u start · r restart · l logs · ⇥ procs · q quit ";
+const MARK: &str = "▶ ";
+/// Under this width the kinds pane gives its columns to the table and folds into the table title.
+const NARROW: u16 = 100;
+const KEYS_PROCS: &str = " ↑↓ move · 1-8 kind · a all · m mine · p ports · / filter · esc clear · s sort · ⏎ detail · t term · K kill · ⇥ compose · q quit ";
+const KEYS_COMPOSE: &str = " ↑↓ move · x stop · u start · r restart · l logs · ⇥ procs · q quit ";
 
 // ##### FORMAT #####
 
@@ -92,37 +95,57 @@ fn kinds(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(" kinds ")), area);
 }
 
-fn procs(frame: &mut Frame, area: Rect, app: &mut App) {
+fn procs(frame: &mut Frame, area: Rect, app: &mut App, narrow: bool) {
+    // VRAM earns its column only on a machine where some process holds GPU memory.
+    let gpu = app.procs.iter().any(|p| p.vram.is_some());
     let rows = app.rows.iter().map(|&i| {
         let p = &app.procs[i];
-        Row::new(vec![
+        let mut cells = vec![
             Cell::from(p.pid.to_string()),
             Cell::from(p.kind.label()).style(Style::new().fg(tint(p.kind))),
             Cell::from(p.name.clone()),
             Cell::from(format!("{:5.1}", p.cpu)),
             Cell::from(bytes(p.rss)),
-            Cell::from(p.vram.map(|m| bytes(m << 20)).unwrap_or_default()),
             Cell::from(ports(&p.ports)).style(Style::new().fg(Color::LightGreen)),
             Cell::from(age(p.uptime)),
             Cell::from(origin(p)).dim(),
-        ])
+        ];
+        gpu.then(|| cells.insert(5, Cell::from(p.vram.map(|m| bytes(m << 20)).unwrap_or_default())));
+        Row::new(cells)
     });
-    let widths = [
+    let mut widths = vec![
         Constraint::Length(8),
         Constraint::Length(9),
         Constraint::Length(16),
         Constraint::Length(6),
         Constraint::Length(7),
-        Constraint::Length(7),
         Constraint::Length(14),
         Constraint::Length(5),
         Constraint::Min(10),
     ];
-    let title = format!(" processes {}/{} ", app.rows.len(), app.procs.len());
+    let mut header = vec!["PID", "KIND", "NAME", "CPU%", "MEM", "PORTS", "UP", "ORIGIN"];
+    if gpu {
+        widths.insert(5, Constraint::Length(7));
+        header.insert(5, "VRAM");
+    }
+    let shown: Vec<&str> = Kind::ALL
+        .iter()
+        .zip(app.kinds)
+        .filter(|&(_, on)| on)
+        .map(|(k, _)| k.label())
+        .collect();
+    let kinds = if narrow {
+        format!("· {} ", shown.join(" "))
+    } else {
+        String::new()
+    };
+    let title = format!(" processes {}/{} {kinds}", app.rows.len(), app.procs.len());
     let table = Table::new(rows, widths)
-        .header(Row::new(["PID", "KIND", "NAME", "CPU%", "MEM", "VRAM", "PORTS", "UP", "ORIGIN"]).bold())
+        .header(Row::new(header).bold())
         .row_highlight_style(SELECTED)
+        .highlight_symbol(MARK)
         .block(Block::bordered().title(title));
+    app.areas.table = area;
     frame.render_stateful_widget(table, area, &mut app.table);
 }
 
@@ -218,7 +241,9 @@ fn compose(frame: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(rows, widths)
         .header(Row::new(["PROJECT", "CONTAINER", "SERVICE", "STATE", "STATUS", "PORTS"]).bold())
         .row_highlight_style(SELECTED)
+        .highlight_symbol(MARK)
         .block(block.title(format!(" compose {} ", all.len())));
+    app.areas.table = area;
     frame.render_stateful_widget(table, area, &mut app.boxes);
 }
 
@@ -251,26 +276,37 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Span::raw(label).dim()
         }
     };
-    frame.render_widget(
-        Line::from(vec![
-            Span::raw(" procs ").bold(),
-            tab(Tab::Procs, " processes "),
-            Span::raw(" "),
-            tab(Tab::Compose, " compose "),
-        ]),
-        head,
-    );
+    let labels = [
+        Span::raw(" procs ").bold(),
+        tab(Tab::Procs, " processes "),
+        Span::raw(" "),
+        tab(Tab::Compose, " compose "),
+    ];
+    // Each tab's clickable span, left to right after the title.
+    let spans = labels.each_ref().map(|s| u16::try_from(s.width()).unwrap_or(0));
+    let at = |i: usize| Rect::new(head.x + spans[..i].iter().sum::<u16>(), head.y, spans[i], 1);
+    app.areas.procs = at(1);
+    app.areas.compose = at(3);
+    frame.render_widget(Line::from(labels.to_vec()), head);
+    app.areas.kinds = Rect::default();
     match app.tab {
         Tab::Procs => {
-            let [side, main] = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).areas(body);
-            kinds(frame, side, app);
+            let narrow = body.width < NARROW;
+            let main = if narrow {
+                body
+            } else {
+                let [side, main] = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).areas(body);
+                app.areas.kinds = side;
+                kinds(frame, side, app);
+                main
+            };
             if app.open {
                 let [top, bottom] =
                     Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(main);
-                procs(frame, top, app);
+                procs(frame, top, app, narrow);
                 detail(frame, bottom, app);
             } else {
-                procs(frame, main, app);
+                procs(frame, main, app, narrow);
             }
         }
         Tab::Compose => compose(frame, body, app),

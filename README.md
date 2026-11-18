@@ -28,6 +28,7 @@ full chain with PIDs, cgroup unit, PSS, swap, threads, open fds, disk I/O and a 
 
 | key | does |
 |---|---|
+| `↑` `↓` · `j` `k` | move · `PgUp` `PgDn` by 20 · `g` `G` first / last |
 | `1`–`8` | toggle a kind · `a` all · `m` mine |
 | `p` | only processes listening on a port |
 | `/` | filter: a number is a PID or a port, text matches name and command |
@@ -35,6 +36,9 @@ full chain with PIDs, cgroup unit, PSS, swap, threads, open fds, disk I/O and a 
 | `⏎` / `Esc` | open / close the detail; `Esc` with the detail closed clears the filter |
 | `t` / `K` | SIGTERM / SIGKILL, after `y` |
 | `⇥` | compose view · `q` quit |
+
+The mouse works too: the wheel moves, a click picks a row (a second click opens its detail), a kind or a tab. Under
+100 columns the kinds pane folds into the table title. Hold `Shift` to select text while the mouse is captured.
 
 ## Compose
 

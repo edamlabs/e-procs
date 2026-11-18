@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 
 use crate::model::{Container, Detail, Kind, Proc};
@@ -71,6 +72,15 @@ pub struct Logs {
     pub scroll: usize,
 }
 
+/// Where the last frame drew what a click can hit; the view writes it, the mouse reads it.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Areas {
+    pub procs: Rect,
+    pub compose: Rect,
+    pub kinds: Rect,
+    pub table: Rect,
+}
+
 pub struct App {
     pub tab: Tab,
     pub procs: Vec<Proc>,
@@ -89,6 +99,7 @@ pub struct App {
     pub pending: Option<Pending>,
     pub logs: Option<Logs>,
     pub status: String,
+    pub areas: Areas,
 }
 
 impl App {
@@ -112,6 +123,7 @@ impl App {
             pending: None,
             logs: None,
             status: String::new(),
+            areas: Areas::default(),
         }
     }
 
@@ -144,11 +156,19 @@ impl App {
             .filter(|&i| self.common_matches(&self.procs[i]))
             .collect();
         let procs = &self.procs;
+        // Ties fall back to the pid: a snapshot comes in hash order, and equal keys must not reshuffle per refresh.
         match self.sort {
-            Sort::Cpu => rows.sort_by(|&a, &b| procs[b].cpu.total_cmp(&procs[a].cpu)),
-            Sort::Mem => rows.sort_by_key(|&i| std::cmp::Reverse(procs[i].rss)),
+            Sort::Cpu => rows.sort_by(|&a, &b| {
+                procs[b]
+                    .cpu
+                    .total_cmp(&procs[a].cpu)
+                    .then(procs[a].pid.cmp(&procs[b].pid))
+            }),
+            Sort::Mem => rows.sort_by_key(|&i| (std::cmp::Reverse(procs[i].rss), procs[i].pid)),
             Sort::Pid => rows.sort_by_key(|&i| procs[i].pid),
-            Sort::Name => rows.sort_by(|&a, &b| procs[a].name.cmp(&procs[b].name)),
+            Sort::Name => {
+                rows.sort_by(|&a, &b| procs[a].name.cmp(&procs[b].name).then(procs[a].pid.cmp(&procs[b].pid)));
+            }
         }
         self.rows = rows;
         let at = keep.and_then(|pid| self.rows.iter().position(|&i| self.procs[i].pid == pid));
@@ -286,6 +306,56 @@ impl App {
         }
     }
 
+    fn mouse_click(&mut self, at: Position) -> Effect {
+        let Areas {
+            procs,
+            compose,
+            kinds,
+            table,
+        } = self.areas;
+        match () {
+            () if procs.contains(at) => self.tab = Tab::Procs,
+            () if compose.contains(at) => self.tab = Tab::Compose,
+            () if self.tab == Tab::Procs && kinds.contains(at) => {
+                // Inside the border: one line per kind, a blank one, then the ports toggle.
+                return match at.y.saturating_sub(kinds.y + 1) {
+                    line @ 0..=7 => self.key_procs(KeyCode::Char(char::from(b'1' + u8::try_from(line).unwrap_or(0)))),
+                    9 => self.key_procs(KeyCode::Char('p')),
+                    _ => Effect::None,
+                };
+            }
+            // Inside the border, under the header row.
+            () if table.contains(at) && at.y >= table.y + 2 => {
+                return self.mouse_click_row(usize::from(at.y - table.y - 2));
+            }
+            () => {}
+        }
+        Effect::None
+    }
+
+    fn mouse_click_row(&mut self, line: usize) -> Effect {
+        let (state, len) = match self.tab {
+            Tab::Procs => (&mut self.table, self.rows.len()),
+            Tab::Compose => (&mut self.boxes, self.compose.as_ref().map_or(0, Vec::len)),
+        };
+        let row = state.offset() + line;
+        match (row < len, state.selected() == Some(row), self.tab) {
+            (false, ..) => Effect::None,
+            // A second click on the selected process opens or closes its detail, as Enter does.
+            (true, true, Tab::Procs) => self.key_procs(KeyCode::Enter),
+            (true, _, tab) => {
+                state.select(Some(row));
+                match tab {
+                    Tab::Procs if self.open => {
+                        self.history.clear();
+                        Effect::Watch(self.selected().map(|p| p.pid))
+                    }
+                    _ => Effect::None,
+                }
+            }
+        }
+    }
+
     // ############################################################
 
     #[must_use]
@@ -336,6 +406,25 @@ impl App {
             .and_then(|d| self.procs.iter().find(|p| p.pid == d.pid))
     }
 
+    /// The wheel moves the selection or scrolls the logs; a click picks a tab, a kind or a row.
+    pub fn mouse(&mut self, m: MouseEvent) -> Effect {
+        let step = match m.kind {
+            MouseEventKind::ScrollDown => KeyCode::Down,
+            MouseEventKind::ScrollUp => KeyCode::Up,
+            MouseEventKind::Down(MouseButton::Left)
+                if self.logs.is_none() && self.pending.is_none() && !self.typing =>
+            {
+                return self.mouse_click(Position::new(m.column, m.row));
+            }
+            _ => return Effect::None,
+        };
+        match () {
+            () if self.logs.is_some() => self.key_logs(step),
+            () if self.pending.is_some() || self.typing => Effect::None,
+            () => self.common_move(step, self.tab),
+        }
+    }
+
     pub fn key(&mut self, key: KeyEvent) -> Effect {
         match (key.code, key.modifiers) {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => Effect::Quit,
@@ -384,9 +473,10 @@ impl Default for App {
 mod tests {
     use std::net::SocketAddr;
 
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
 
-    use super::{App, Effect};
+    use super::{App, Areas, Effect, Tab};
     use crate::model::{Kind, Port, Proc, Proto};
     use crate::providers::signal::Sig;
 
@@ -540,5 +630,99 @@ mod tests {
         assert_eq!(press(&mut app, KeyCode::Char('K')), Effect::None);
         assert_eq!(press(&mut app, KeyCode::Down), Effect::None);
         assert!(app.pending.is_none());
+    }
+
+    fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) -> Effect {
+        app.mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn click(app: &mut App, column: u16, row: u16) -> Effect {
+        mouse(app, MouseEventKind::Down(MouseButton::Left), column, row)
+    }
+
+    /// The layout of a 120×30 frame: tabs on the first line, kinds on the left, the table beside it.
+    fn framed() -> App {
+        let mut app = loaded();
+        app.kinds = [true; 8];
+        app.common_reindex();
+        app.areas = Areas {
+            procs: Rect::new(7, 0, 11, 1),
+            compose: Rect::new(19, 0, 9, 1),
+            kinds: Rect::new(0, 1, 24, 28),
+            table: Rect::new(24, 1, 96, 28),
+        };
+        app
+    }
+
+    #[test]
+    fn test_sort_ties_keep_one_order_whatever_the_snapshot_order() {
+        let mut app = App::new();
+        let all: Vec<Proc> = (1..=6).map(|pid| proc(pid, Kind::Terminal, 0.0, None)).collect();
+        app.update(all.clone(), Ok(Vec::new()), None);
+        let first = pids(&app);
+        app.update(all.into_iter().rev().collect(), Ok(Vec::new()), None);
+        assert_eq!(pids(&app), first);
+        assert_eq!(first, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_mouse_wheel_moves_selection() {
+        let mut app = framed();
+        let top = app.selected().map(|p| p.pid);
+        mouse(&mut app, MouseEventKind::ScrollDown, 50, 10);
+        assert_ne!(app.selected().map(|p| p.pid), top);
+        mouse(&mut app, MouseEventKind::ScrollUp, 50, 10);
+        assert_eq!(app.selected().map(|p| p.pid), top);
+    }
+
+    #[test]
+    fn test_mouse_click_selects_row_then_opens_detail() {
+        let mut app = framed();
+        // Row 2 of the table sits under its border and header: y = 1 + 2 + 2.
+        let third = app.rows.get(2).map(|&i| app.procs[i].pid);
+        assert_ne!(app.selected().map(|p| p.pid), third);
+        assert_eq!(click(&mut app, 40, 5), Effect::None);
+        assert_eq!(app.selected().map(|p| p.pid), third);
+        assert_eq!(click(&mut app, 40, 5), Effect::Watch(third));
+        assert!(app.open);
+    }
+
+    #[test]
+    fn test_mouse_click_below_last_row_is_harmless() {
+        let mut app = framed();
+        let before = app.table.selected();
+        assert_eq!(click(&mut app, 40, 25), Effect::None);
+        assert_eq!(app.table.selected(), before);
+    }
+
+    #[test]
+    fn test_mouse_click_kind_toggles_it() {
+        let mut app = framed();
+        // Kind 3 (terminal) is the third line inside the border.
+        click(&mut app, 5, 4);
+        assert!(!app.kinds[2]);
+        assert!(!pids(&app).contains(&10));
+    }
+
+    #[test]
+    fn test_mouse_click_tab_switches_view() {
+        let mut app = framed();
+        click(&mut app, 22, 0);
+        assert_eq!(app.tab, Tab::Compose);
+        click(&mut app, 10, 0);
+        assert_eq!(app.tab, Tab::Procs);
+    }
+
+    #[test]
+    fn test_mouse_never_answers_a_pending_kill() {
+        let mut app = framed();
+        press(&mut app, KeyCode::Char('K'));
+        assert_eq!(click(&mut app, 40, 4), Effect::None);
+        assert!(app.pending.is_some());
     }
 }
