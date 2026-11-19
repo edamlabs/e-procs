@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0] - 2026-11-19
+
+- Compose joins the kinds menu as `9 compose`, in its own colour (light red, also on the compose tab and table border): `9` or a click opens it and closes it; `1`–`8` from compose go back showing that kind, never hiding it. The kinds pane stays beside the compose table; the ports toggle moved one line down.
+- Evidence: `make check` green (31 tests, 4 new); pty drive at 140 columns: `9 [ ] compose 36` drawn bold in red, `9` opens compose, a click on the line returns, `7` from compose turns system on and shows it.
+
 ## [0.1.0] - 2026-11-18
 
 - Selection visible and still: rows that tie on the sort key fall back to the PID, so equal-CPU processes no longer reshuffle every refresh and carry the selection off screen; a 250 ms warm-up sample gives the first snapshot real CPU; the selected row carries a `▶` mark.

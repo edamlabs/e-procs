@@ -183,6 +183,10 @@ impl App {
                 self.common_reindex();
                 Effect::None
             }
+            KeyCode::Char('9') => {
+                self.tab = Tab::Compose;
+                Effect::None
+            }
             KeyCode::Char('a') => {
                 let all = self.kinds.iter().all(|&on| on);
                 self.kinds = [!all; Kind::ALL.len()];
@@ -233,6 +237,23 @@ impl App {
     }
 
     fn key_compose(&mut self, code: KeyCode) -> Effect {
+        // The kinds menu stays live here: `9` goes back, a kind goes back showing that kind.
+        match code {
+            KeyCode::Char('9') => {
+                self.tab = Tab::Procs;
+                return Effect::None;
+            }
+            KeyCode::Char(c @ '1'..='8') => {
+                let i = (c as usize) - ('1' as usize);
+                self.tab = Tab::Procs;
+                return if self.kinds[i] {
+                    Effect::None
+                } else {
+                    self.key_procs(code)
+                };
+            }
+            _ => {}
+        }
         let Some(c) = self.container().cloned() else {
             return self.common_move(code, Tab::Compose);
         };
@@ -316,12 +337,16 @@ impl App {
         match () {
             () if procs.contains(at) => self.tab = Tab::Procs,
             () if compose.contains(at) => self.tab = Tab::Compose,
-            () if self.tab == Tab::Procs && kinds.contains(at) => {
-                // Inside the border: one line per kind, a blank one, then the ports toggle.
-                return match at.y.saturating_sub(kinds.y + 1) {
-                    line @ 0..=7 => self.key_procs(KeyCode::Char(char::from(b'1' + u8::try_from(line).unwrap_or(0)))),
-                    9 => self.key_procs(KeyCode::Char('p')),
-                    _ => Effect::None,
+            () if kinds.contains(at) => {
+                // Inside the border: one line per kind, compose, a blank one, then the ports toggle.
+                let code = match at.y.saturating_sub(kinds.y + 1) {
+                    line @ 0..=8 => KeyCode::Char(char::from(b'1' + u8::try_from(line).unwrap_or(0))),
+                    10 if self.tab == Tab::Procs => KeyCode::Char('p'),
+                    _ => return Effect::None,
+                };
+                return match self.tab {
+                    Tab::Procs => self.key_procs(code),
+                    Tab::Compose => self.key_compose(code),
                 };
             }
             // Inside the border, under the header row.
@@ -724,5 +749,45 @@ mod tests {
         press(&mut app, KeyCode::Char('K'));
         assert_eq!(click(&mut app, 40, 4), Effect::None);
         assert!(app.pending.is_some());
+    }
+
+    #[test]
+    fn test_key_nine_opens_compose_and_back() {
+        let mut app = framed();
+        press(&mut app, KeyCode::Char('9'));
+        assert_eq!(app.tab, Tab::Compose);
+        press(&mut app, KeyCode::Char('9'));
+        assert_eq!(app.tab, Tab::Procs);
+    }
+
+    #[test]
+    fn test_key_kind_in_compose_shows_that_kind_never_hides_it() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('9'));
+        // Kind 3 (terminal) is on in the mine set, kind 7 (system) is off.
+        press(&mut app, KeyCode::Char('3'));
+        assert_eq!(app.tab, Tab::Procs);
+        assert!(app.kinds[2]);
+        press(&mut app, KeyCode::Char('9'));
+        press(&mut app, KeyCode::Char('7'));
+        assert!(app.kinds[6]);
+        assert!(pids(&app).contains(&12));
+    }
+
+    #[test]
+    fn test_mouse_click_compose_line_switches_view() {
+        let mut app = framed();
+        // Compose is the ninth line inside the kinds border: y = 1 + 1 + 8.
+        click(&mut app, 5, 10);
+        assert_eq!(app.tab, Tab::Compose);
+        click(&mut app, 5, 10);
+        assert_eq!(app.tab, Tab::Procs);
+    }
+
+    #[test]
+    fn test_mouse_click_ports_line_moved_below_compose() {
+        let mut app = framed();
+        click(&mut app, 5, 12);
+        assert!(app.listening);
     }
 }

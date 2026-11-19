@@ -9,10 +9,13 @@ use crate::tui::app::{App, Tab};
 
 const SELECTED: Style = Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD);
 const MARK: &str = "▶ ";
+/// Compose is not a kind of process but sits in the same menu: its own colour sets it apart.
+const COMPOSE: Color = Color::LightRed;
 /// Under this width the kinds pane gives its columns to the table and folds into the table title.
 const NARROW: u16 = 100;
-const KEYS_PROCS: &str = " ↑↓ move · 1-8 kind · a all · m mine · p ports · / filter · esc clear · s sort · ⏎ detail · t term · K kill · ⇥ compose · q quit ";
-const KEYS_COMPOSE: &str = " ↑↓ move · x stop · u start · r restart · l logs · ⇥ procs · q quit ";
+const KEYS_PROCS: &str = " ↑↓ move · 1-8 kind · 9 compose · a all · m mine · p ports · / filter · esc clear · s sort · ⏎ detail · t term · K kill · ⇥ compose · q quit ";
+const KEYS_COMPOSE: &str =
+    " ↑↓ move · 9 processes · 1-8 a kind · x stop · u start · r restart · l logs · ⇥ procs · q quit ";
 
 // ##### FORMAT #####
 
@@ -80,6 +83,15 @@ fn kinds(frame: &mut Frame, area: Rect, app: &App) {
             ])
         })
         .collect();
+    let containers = app
+        .compose
+        .as_ref()
+        .map_or_else(|_| "—".to_owned(), |all| all.len().to_string());
+    lines.push(Line::from(vec![
+        Span::raw(format!("9 {} ", if app.tab == Tab::Compose { "[x]" } else { "[ ]" })),
+        Span::styled(format!("{:<9}", "compose"), Style::new().fg(COMPOSE).bold()),
+        Span::raw(format!("{containers:>4}")).dim(),
+    ]));
     lines.push(Line::raw(""));
     lines.push(Line::raw(format!(
         "p {} ports only",
@@ -206,7 +218,7 @@ fn detail(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn compose(frame: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::bordered();
+    let block = Block::bordered().border_style(Style::new().fg(COMPOSE));
     let all = match &app.compose {
         Ok(all) => all,
         Err(e) => {
@@ -222,7 +234,9 @@ fn compose(frame: &mut Frame, area: Rect, app: &mut App) {
     let rows = all.iter().map(|c| {
         let running = c.state == "running";
         Row::new(vec![
-            Cell::from(c.project.clone().unwrap_or_else(|| "—".to_owned())).bold(),
+            Cell::from(c.project.clone().unwrap_or_else(|| "—".to_owned()))
+                .bold()
+                .fg(COMPOSE),
             Cell::from(c.name.clone()),
             Cell::from(c.service.clone().unwrap_or_default()),
             Cell::from(c.state.clone()).style(Style::new().fg(if running { Color::Green } else { Color::Red })),
@@ -269,12 +283,10 @@ fn popup(frame: &mut Frame, area: Rect, title: &str, body: Paragraph) {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [head, body, foot] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(frame.area());
-    let tab = |t: Tab, label: &'static str| {
-        if app.tab == t {
-            Span::raw(label).reversed().bold()
-        } else {
-            Span::raw(label).dim()
-        }
+    let tab = |t: Tab, label: &'static str| match (app.tab == t, t) {
+        (true, Tab::Compose) => Span::raw(label).reversed().bold().fg(COMPOSE),
+        (true, Tab::Procs) => Span::raw(label).reversed().bold(),
+        (false, _) => Span::raw(label).dim(),
     };
     let labels = [
         Span::raw(" procs ").bold(),
@@ -289,17 +301,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.areas.compose = at(3);
     frame.render_widget(Line::from(labels.to_vec()), head);
     app.areas.kinds = Rect::default();
+    // One menu for both views: the kinds pane stays beside compose too.
+    let narrow = body.width < NARROW;
+    let main = if narrow {
+        body
+    } else {
+        let [side, main] = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).areas(body);
+        app.areas.kinds = side;
+        kinds(frame, side, app);
+        main
+    };
     match app.tab {
         Tab::Procs => {
-            let narrow = body.width < NARROW;
-            let main = if narrow {
-                body
-            } else {
-                let [side, main] = Layout::horizontal([Constraint::Length(24), Constraint::Min(0)]).areas(body);
-                app.areas.kinds = side;
-                kinds(frame, side, app);
-                main
-            };
             if app.open {
                 let [top, bottom] =
                     Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(main);
@@ -309,7 +322,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 procs(frame, main, app, narrow);
             }
         }
-        Tab::Compose => compose(frame, body, app),
+        Tab::Compose => compose(frame, main, app),
     }
     let keys = match app.tab {
         Tab::Procs => KEYS_PROCS,
